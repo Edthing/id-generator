@@ -1,0 +1,9 @@
+services:
+  unique-id-generator:
+    build: .
+    image: unique-id-generator
+    ports:
+      - "8082:8080"
+    environment:
+      - WORKER_ID=1
+    restart: always

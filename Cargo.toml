@@ -1,0 +1,15 @@
+[package]
+name = "unique-id-generator"
+version = "0.1.0"
+authors = ["Edwin Sundberg <edwin@edthing.com>"]
+edition = "2021"
+
+[dependencies.actix-web]
+version = "4"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
