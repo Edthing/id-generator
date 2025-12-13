@@ -1,4 +1,3 @@
-use actix_web::rt::task::yield_now;
 use actix_web::{web, App, HttpServer, Result, HttpResponse, get};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,8 +20,8 @@ struct AppState {
 
 fn get_timestamp() -> u64 {
     let start = SystemTime::now();
-    let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-    return TryInto::<u64>::try_into(since_the_epoch.as_millis()).unwrap() - UNIX_EPOCH_OFFSET;
+    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap_or_default();
+    TryInto::<u64>::try_into(since_the_epoch.as_millis()).unwrap_or(0).saturating_sub(UNIX_EPOCH_OFFSET)
 }
 
 fn format_snowflake(worker_id: u64, sequence: u64, timestamp: u64) -> u64 {
@@ -31,10 +30,20 @@ fn format_snowflake(worker_id: u64, sequence: u64, timestamp: u64) -> u64 {
 
 fn generate_snowflake(worker_id: u64, mut sequence: MutexGuard<u64>, mut timestamp: MutexGuard<u64>) -> u64 {
     let mut current_timestamp = get_timestamp();
+
+    // Handle leap seconds / clock drift backwards - wait until time catches up
+    if current_timestamp < *timestamp {
+        while current_timestamp < *timestamp {
+            std::hint::spin_loop();
+            current_timestamp = get_timestamp();
+        }
+    }
+
     if current_timestamp == *timestamp {
         *sequence += 1;
         if *sequence > SEQUENCE_MASK {
             while current_timestamp == *timestamp {
+                std::hint::spin_loop();
                 current_timestamp = get_timestamp();
             }
             *sequence = 0;
@@ -43,7 +52,42 @@ fn generate_snowflake(worker_id: u64, mut sequence: MutexGuard<u64>, mut timesta
         *sequence = 0;
     }
     *timestamp = current_timestamp;
-    return format_snowflake(worker_id, *sequence, *timestamp);
+    format_snowflake(worker_id, *sequence, *timestamp)
+}
+
+fn generate_snowflakes_bulk(worker_id: u64, sequence: &Mutex<u64>, timestamp: &Mutex<u64>, count: u64) -> Vec<String> {
+    let mut sequence = sequence.lock().unwrap();
+    let mut timestamp = timestamp.lock().unwrap();
+    let mut results = Vec::with_capacity(count as usize);
+
+    for _ in 0..count {
+        let mut current_timestamp = get_timestamp();
+
+        // Handle leap seconds / clock drift backwards
+        if current_timestamp < *timestamp {
+            while current_timestamp < *timestamp {
+                std::hint::spin_loop();
+                current_timestamp = get_timestamp();
+            }
+        }
+
+        if current_timestamp == *timestamp {
+            *sequence += 1;
+            if *sequence > SEQUENCE_MASK {
+                while current_timestamp == *timestamp {
+                    std::hint::spin_loop();
+                    current_timestamp = get_timestamp();
+                }
+                *sequence = 0;
+            }
+        } else {
+            *sequence = 0;
+        }
+        *timestamp = current_timestamp;
+        results.push(format_snowflake(worker_id, *sequence, *timestamp).to_string());
+    }
+
+    results
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,16 +112,10 @@ struct Bulk {
 async fn snowflakes(data: web::Data<AppState>, path: web::Path<u64>) -> Result<HttpResponse> {
     let count = path.into_inner();
     if count > MAX_IDS_PER_REQUEST {
-        return Ok(HttpResponse::BadRequest().body("Count must be less than or equal to ".to_owned() + &MAX_IDS_PER_REQUEST.to_string()));
+        return Ok(HttpResponse::BadRequest().body(format!("Count must be less than or equal to {}", MAX_IDS_PER_REQUEST)));
     }
-    let mut snowflakes: Vec<String> = Vec::new();
-    for _ in 0..count {
-        let flake = generate_snowflake(data.worker_id, data.sequence.lock().unwrap(), data.timestamp.lock().unwrap());
-        let flake_str = flake.to_string();
-        snowflakes.push(flake_str);
-        yield_now().await;
-    }
-    Ok(HttpResponse::Ok().json(Bulk { ids: snowflakes }))
+    let ids = generate_snowflakes_bulk(data.worker_id, &data.sequence, &data.timestamp, count);
+    Ok(HttpResponse::Ok().json(Bulk { ids }))
 }
 
 #[actix_web::main]
