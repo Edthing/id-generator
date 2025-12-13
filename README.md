@@ -6,8 +6,11 @@ A Rust web service implementing Twitter's Snowflake ID generation algorithm. Gen
 
 - Single ID generation endpoint
 - Bulk ID generation (up to 4,096,000 IDs per request)
-- Handles clock drift and leap seconds
+- Health check endpoint for container orchestration
+- Handles clock drift and leap seconds with timeout protection
 - Thread-safe sequence management
+- Configurable worker threads
+- Comprehensive input validation
 
 ## API Endpoints
 
@@ -21,17 +24,34 @@ Returns a single unique ID.
 
 ### GET /ids/{count}
 
-Returns multiple unique IDs.
+Returns multiple unique IDs (count must be 1 to 4,096,000).
 
 ```json
 {"ids": ["123456789012345678", "123456789012345679", ...]}
 ```
 
+### GET /health
+
+Health check endpoint for container orchestration (Kubernetes, Docker, etc.).
+
+```json
+{"status": "healthy", "worker_id": 1}
+```
+
+### Error Responses
+
+All errors return JSON with a consistent format:
+
+```json
+{"error": "Error message description"}
+```
+
 ## Configuration
 
-| Environment Variable | Description | Required |
-|---------------------|-------------|----------|
-| `WORKER_ID` | Unique worker identifier (0-1023) | Yes |
+| Environment Variable | Description | Required | Default |
+|---------------------|-------------|----------|---------|
+| `WORKER_ID` | Unique worker identifier (0-1023) | Yes | - |
+| `WORKERS` | Number of HTTP worker threads | No | 1 |
 
 ## Running
 
