@@ -1,4 +1,4 @@
-# unique-id-generator
+# id-generator
 
 A Rust web service implementing Twitter's Snowflake ID generation algorithm. Generates unique, time-sorted 64-bit identifiers suitable for distributed systems.
 
@@ -65,7 +65,7 @@ docker run -d -p 8080:8080 -e WORKER_ID=1 ghcr.io/Edthing/id-generator
 
 ```bash
 cargo build --release
-WORKER_ID=1 ./target/release/unique-id-generator
+WORKER_ID=1 ./target/release/id-generator
 ```
 
 The server listens on `0.0.0.0:8080`.
@@ -82,4 +82,4 @@ IDs are 64-bit integers with the following structure:
 
 ## License
 
-AGPL-3.0
+GNU Affero General Public License v3.0

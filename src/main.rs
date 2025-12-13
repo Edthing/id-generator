@@ -205,7 +205,7 @@ async fn main() -> std::io::Result<()> {
 
     let workers = parse_workers();
 
-    println!("Starting unique-id-generator with worker_id={}, workers={}", worker_id, workers);
+    println!("Starting id-generator with worker_id={}, workers={}", worker_id, workers);
 
     let data = web::Data::new(AppState {
         worker_id,

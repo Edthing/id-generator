@@ -1,5 +1,5 @@
 [package]
-name = "unique-id-generator"
+name = "id-generator"
 version = "1.0.0"
 authors = ["Edwin Sundberg <edwin@edthing.com>"]
 edition = "2021"
