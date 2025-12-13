@@ -2,7 +2,7 @@ use actix_web::{web, App, HttpServer, Result, HttpResponse, get};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::env::var;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 // Constants
 const UNIX_EPOCH_OFFSET: u64 = 1705065354064;
@@ -25,56 +25,27 @@ fn get_timestamp() -> u64 {
 }
 
 fn format_snowflake(worker_id: u64, sequence: u64, timestamp: u64) -> u64 {
-    return ((timestamp & TIMESTAMP_MASK) << 22) | ((worker_id & WORKER_ID_MASK) << 12) | (sequence & SEQUENCE_MASK);
+    ((timestamp & TIMESTAMP_MASK) << 22) | ((worker_id & WORKER_ID_MASK) << 12) | (sequence & SEQUENCE_MASK)
 }
 
-fn generate_snowflake(worker_id: u64, mut sequence: MutexGuard<u64>, mut timestamp: MutexGuard<u64>) -> u64 {
-    let mut current_timestamp = get_timestamp();
-
-    // Handle leap seconds / clock drift backwards - wait until time catches up
-    if current_timestamp < *timestamp {
-        while current_timestamp < *timestamp {
-            std::hint::spin_loop();
-            current_timestamp = get_timestamp();
-        }
-    }
-
-    if current_timestamp == *timestamp {
-        *sequence += 1;
-        if *sequence > SEQUENCE_MASK {
-            while current_timestamp == *timestamp {
-                std::hint::spin_loop();
-                current_timestamp = get_timestamp();
-            }
-            *sequence = 0;
-        }
-    } else {
-        *sequence = 0;
-    }
-    *timestamp = current_timestamp;
-    format_snowflake(worker_id, *sequence, *timestamp)
-}
-
-fn generate_snowflakes_bulk(worker_id: u64, sequence: &Mutex<u64>, timestamp: &Mutex<u64>, count: u64) -> Vec<String> {
-    let mut sequence = sequence.lock().unwrap();
-    let mut timestamp = timestamp.lock().unwrap();
+fn generate_snowflakes(worker_id: u64, sequence_mutex: &Mutex<u64>, timestamp_mutex: &Mutex<u64>, count: u64) -> Vec<String> {
+    let mut sequence = sequence_mutex.lock().unwrap();
+    let mut last_timestamp = timestamp_mutex.lock().unwrap();
     let mut results = Vec::with_capacity(count as usize);
 
     for _ in 0..count {
         let mut current_timestamp = get_timestamp();
 
-        // Handle leap seconds / clock drift backwards
-        if current_timestamp < *timestamp {
-            while current_timestamp < *timestamp {
-                std::hint::spin_loop();
-                current_timestamp = get_timestamp();
-            }
+        // Handle leap seconds / clock drift backwards - wait until time catches up
+        while current_timestamp < *last_timestamp {
+            std::hint::spin_loop();
+            current_timestamp = get_timestamp();
         }
 
-        if current_timestamp == *timestamp {
+        if current_timestamp == *last_timestamp {
             *sequence += 1;
             if *sequence > SEQUENCE_MASK {
-                while current_timestamp == *timestamp {
+                while current_timestamp == *last_timestamp {
                     std::hint::spin_loop();
                     current_timestamp = get_timestamp();
                 }
@@ -83,8 +54,8 @@ fn generate_snowflakes_bulk(worker_id: u64, sequence: &Mutex<u64>, timestamp: &M
         } else {
             *sequence = 0;
         }
-        *timestamp = current_timestamp;
-        results.push(format_snowflake(worker_id, *sequence, *timestamp).to_string());
+        *last_timestamp = current_timestamp;
+        results.push(format_snowflake(worker_id, *sequence, *last_timestamp).to_string());
     }
 
     results
@@ -97,9 +68,8 @@ struct Id {
 
 #[get("/id")]
 async fn snowflake(data: web::Data<AppState>) -> Result<HttpResponse> {
-    let flake = generate_snowflake(data.worker_id, data.sequence.lock().unwrap(), data.timestamp.lock().unwrap());
-    let flake_str = flake.to_string();
-    Ok(HttpResponse::Ok().json(Id { id: flake_str }))
+    let ids = generate_snowflakes(data.worker_id, &data.sequence, &data.timestamp, 1);
+    Ok(HttpResponse::Ok().json(Id { id: ids.into_iter().next().unwrap() }))
 }
 
 // bulk endpoint
@@ -114,7 +84,7 @@ async fn snowflakes(data: web::Data<AppState>, path: web::Path<u64>) -> Result<H
     if count > MAX_IDS_PER_REQUEST {
         return Ok(HttpResponse::BadRequest().body(format!("Count must be less than or equal to {}", MAX_IDS_PER_REQUEST)));
     }
-    let ids = generate_snowflakes_bulk(data.worker_id, &data.sequence, &data.timestamp, count);
+    let ids = generate_snowflakes(data.worker_id, &data.sequence, &data.timestamp, count);
     Ok(HttpResponse::Ok().json(Bulk { ids }))
 }
 
