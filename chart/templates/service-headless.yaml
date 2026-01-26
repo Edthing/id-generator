@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "id-generator.fullname" . }}
+  labels:
+    {{- include "id-generator.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "id-generator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

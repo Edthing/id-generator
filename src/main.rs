@@ -3,6 +3,35 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use std::env::var;
 use std::sync::Mutex;
+use prometheus::{Gauge, IntCounter, Encoder, TextEncoder};
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref IDS_GENERATED: IntCounter = IntCounter::new(
+        "id_generator_ids_generated_total", 
+        "Total IDs generated"
+    ).unwrap();
+    
+    static ref SEQUENCE_EXHAUSTED: IntCounter = IntCounter::new(
+        "id_generator_sequence_exhausted_total",
+        "Times sequence was exhausted within a millisecond"
+    ).unwrap();
+    
+    static ref WORKER_ID: Gauge = Gauge::new(
+        "id_generator_worker_id",
+        "Worker ID of this instance"
+    ).unwrap();
+
+    static ref CURRENT_SEQUENCE: Gauge = Gauge::new(
+        "id_generator_current_sequence",
+        "Current sequence number this ms"
+    ).unwrap();
+    
+    static ref MAX_SEQUENCE_PER_MS: Gauge = Gauge::new(
+        "id_generator_max_sequence_per_ms",
+        "Maximum sequence number per millisecond"
+    ).unwrap();
+}
 
 // Constants
 const UNIX_EPOCH_OFFSET: u64 = 1705065354064;
@@ -87,6 +116,7 @@ fn generate_snowflakes(
         if current_timestamp == *last_timestamp {
             *sequence += 1;
             if *sequence > SEQUENCE_MASK {
+                SEQUENCE_EXHAUSTED.inc();
                 let wait_start = Instant::now();
                 while current_timestamp == *last_timestamp {
                     if wait_start.elapsed() > timeout {
@@ -101,6 +131,10 @@ fn generate_snowflakes(
             *sequence = 0;
         }
         *last_timestamp = current_timestamp;
+        
+        CURRENT_SEQUENCE.set(*sequence as f64);
+        IDS_GENERATED.inc();
+        
         results.push(format_snowflake(worker_id, *sequence, *last_timestamp).to_string());
     }
 
@@ -129,6 +163,25 @@ async fn health(data: web::Data<AppState>) -> Result<HttpResponse> {
         status: "healthy".to_string(),
         worker_id: data.worker_id,
     }))
+}
+
+#[get("/metrics")]
+async fn metrics() -> Result<HttpResponse> {
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+    if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
+         eprintln!("Failed to encode metrics: {}", e);
+         return Ok(HttpResponse::InternalServerError().body("Failed to encode metrics"));
+    }
+    
+    match String::from_utf8(buffer) {
+        Ok(s) => Ok(HttpResponse::Ok().content_type("text/plain").body(s)),
+        Err(e) => {
+            eprintln!("Failed to convert metrics to string: {}", e);
+            Ok(HttpResponse::InternalServerError().body("Failed to convert metrics to string"))
+        }
+    }
 }
 
 #[get("/id")]
@@ -169,21 +222,38 @@ async fn snowflakes(data: web::Data<AppState>, path: web::Path<u64>) -> Result<H
 }
 
 fn parse_worker_id() -> std::result::Result<u64, String> {
-    let worker_id_str = var("WORKER_ID")
-        .map_err(|_| "WORKER_ID environment variable is required")?;
+    // Priority 1: Explicit WORKER_ID environment variable
+    if let Ok(worker_id_str) = var("WORKER_ID") {
+        let worker_id: u64 = worker_id_str
+            .parse()
+            .map_err(|_| format!("WORKER_ID must be a valid number, got: '{}'", worker_id_str))?;
 
-    let worker_id: u64 = worker_id_str
-        .parse()
-        .map_err(|_| format!("WORKER_ID must be a valid number, got: '{}'", worker_id_str))?;
-
-    if worker_id > MAX_WORKER_ID {
-        return Err(format!(
-            "WORKER_ID must be between 0 and {}, got: {}",
-            MAX_WORKER_ID, worker_id
-        ));
+        if worker_id > MAX_WORKER_ID {
+            return Err(format!(
+                "WORKER_ID must be between 0 and {}, got: {}",
+                MAX_WORKER_ID, worker_id
+            ));
+        }
+        return Ok(worker_id);
     }
 
-    Ok(worker_id)
+    // Priority 2: Derive from POD_NAME (e.g., "id-generator-0" -> 0)
+    if let Ok(pod_name) = var("POD_NAME") {
+        if let Some(last_part) = pod_name.rsplit('-').next() {
+            if let Ok(id) = last_part.parse::<u64>() {
+                if id > MAX_WORKER_ID {
+                    return Err(format!(
+                        "Derived worker ID from POD_NAME '{}' is {}, which exceeds max {}",
+                        pod_name, id, MAX_WORKER_ID
+                    ));
+                }
+                println!("Derived WORKER_ID={} from POD_NAME='{}'", id, pod_name);
+                return Ok(id);
+            }
+        }
+    }
+
+    Err("WORKER_ID environment variable is required, or POD_NAME must end with a number".to_string())
 }
 
 fn parse_workers() -> u32 {
@@ -207,6 +277,10 @@ async fn main() -> std::io::Result<()> {
 
     println!("Starting id-generator with worker_id={}, workers={}", worker_id, workers);
 
+    // Initialize metrics
+    WORKER_ID.set(worker_id as f64);
+    MAX_SEQUENCE_PER_MS.set(SEQUENCE_MASK as f64);
+
     let data = web::Data::new(AppState {
         worker_id,
         sequence: Mutex::new(0),
@@ -217,6 +291,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(data.clone())
             .service(health)
+            .service(metrics)
             .service(snowflake)
             .service(snowflakes)
     })

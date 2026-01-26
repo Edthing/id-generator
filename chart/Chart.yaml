@@ -1,0 +1,13 @@
+apiVersion: v2
+name: id-generator
+description: A Helm chart for deploying the ID Generator service with unique worker IDs
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - id-generator
+  - snowflake
+  - distributed-id
+home: https://github.com/Edthing/id-generator
+maintainers:
+  - name: Edthing
