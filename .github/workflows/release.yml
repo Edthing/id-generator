@@ -78,6 +78,16 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "CHART_NAME=id-generator" >> $GITHUB_OUTPUT
 
+      - name: Generate Manifest YAML
+        env:
+          VERSION: ${{ steps.chart_version.outputs.VERSION }}
+          CHART_NAME: ${{ steps.chart_version.outputs.CHART_NAME }}
+        run: |
+          helm template $CHART_NAME chart/ \
+            --namespace default \
+            --set image.tag=$VERSION \
+            > "$CHART_NAME-$VERSION.yaml"
+
       - name: Create Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,6 +103,7 @@ jobs:
             echo "Creating release $TAG_NAME"
             gh release create "$TAG_NAME" \
               "$CHART_NAME-$VERSION.tgz" \
+              "$CHART_NAME-$VERSION.yaml" \
               --title "$CHART_NAME $VERSION" \
               --generate-notes
           fi
